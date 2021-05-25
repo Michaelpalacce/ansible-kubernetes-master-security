@@ -1,0 +1,15 @@
+---
+dependencies: []
+
+galaxy_info:
+    role_name: kubernetes_master_security
+    author: stefangenov
+    description: Hardens security in a k8s cluster according to CIS benchmarks
+    platforms:
+        - name: Ubuntu
+          versions:
+              - all
+    galaxy_tags:
+        - containers
+        - kubernetes
+        - security

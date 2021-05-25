@@ -1,0 +1,211 @@
+- name: Ensure there is only one cluster-admin clusterolebinding
+  shell: kubectl get clusterrolebindings -o=custom-columns=NAME:.metadata.name,ROLE:.roleRef.name,SUBJECT:.subjects[*].name | grep cluster-admin
+  register: clusterrolebindings
+  failed_when: "clusterrolebindings.stdout_lines | length != 1"
+  when: check_cluster_role_bindings
+
+- name: Ensure there are no wildcards in roles
+  shell: kubectl get roles --all-namespaces -o yaml | grep '"\*"'
+  register: roles
+  failed_when: "roles.stdout_lines | length != 0"
+  when: check_roles_have_wildcard_all
+
+- name: Ensure the default namespace is not used by anything but the kubernetes service
+  shell: kubectl get all -n default -o=jsonpath='{.items[*].metadata.name}'
+  register: default_fetch
+  failed_when: "default_fetch.stdout != 'kubernetes'"
+  when: check_default_namespace_empty
+
+- name: Ensure files do not have open permissions
+  when: fix_file_permissions
+  file:
+      path: "{{ item.path }}"
+      mode: "{{ item.mode }}"
+      group: "{{ item.group | default( 'root' ) }}"
+      owner : "{{ item.owner | default( 'root' ) }}"
+      recurse: "{{ item.recurse | default( 'no' ) }}"
+  with_items:
+      - path: /etc/kubernetes/manifests/kube-apiserver.yaml
+        mode: "0600"
+      - path: /etc/kubernetes/manifests/kube-controller-manager.yaml
+        mode: "0600"
+      - path: /etc/kubernetes/manifests/kube-scheduler.yaml
+        mode: "0600"
+      - path: /etc/kubernetes/manifests/etcd.yaml
+        mode: "0600"
+      - path: /etc/cni/net.d
+        mode: "0644"
+        recurse: yes
+      - path: /opt/cni/bin
+        mode: "0644"
+        recurse: yes
+      - path: /var/lib/etcd
+        mode: "0700"
+        recurse: yes
+      - path: /etc/kubernetes/admin.conf
+        mode: "0600"
+      - path: /etc/kubernetes/scheduler.conf
+        mode: "0600"
+      - path: /etc/kubernetes/controller-manager.conf
+        mode: "0600"
+      - path: /etc/kubernetes/pki/
+        mode: "0755"
+      - path: /etc/kubernetes/pki/apiserver-etcd-client.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/apiserver-kubelet-client.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/ca.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/front-proxy-ca.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/front-proxy-client.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/apiserver-etcd-client.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/apiserver.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/apiserver-kubelet-client.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/ca.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/front-proxy-ca.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/front-proxy-client.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/sa.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/sa.pub
+        mode: "0600"
+      - path: /etc/kubernetes/pki/etcd/ca.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/etcd/healthcheck-client.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/etcd/peer.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/etcd/server.crt
+        mode: "0644"
+      - path: /etc/kubernetes/pki/etcd/ca.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/etcd/healthcheck-client.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/etcd/peer.key
+        mode: "0600"
+      - path: /etc/kubernetes/pki/etcd/server.key
+        mode: "0600"
+
+- name: Ensure variables are missing from kube-apiserver.yaml so we can add them later
+  when: fix_k8s_components
+  lineinfile:
+      path: /etc/kubernetes/manifests/kube-apiserver.yaml
+      regexp: "{{ item }}"
+      state: absent
+  with_items:
+      - "--audit-log-path"
+      - "--audit-log-maxage"
+      - "--audit-log-maxbackup"
+      - "--audit-log-maxsize"
+      - "--authorization-mode"
+      - "--insecure-port"
+      - "--service-account-lookup" # Just delete this one
+      - "--basic-auth-file" # Just delete this one
+      - "--token-auth-file" # Just delete this one
+      - "--insecure-bind-address" # Just delete this one
+
+- name: Add custom variables to the kube-apiserver.yaml
+  when: fix_k8s_components
+  lineinfile:
+      path: "/etc/kubernetes/manifests/kube-apiserver.yaml"
+      insertafter: '-\skube-apiserver'
+      line: "{{ item }}"
+  with_items:
+      - "    - --audit-log-path=/var/log/apiserver/audit.log"
+      - "    - --audit-log-maxage=30"
+      - "    - --audit-log-maxbackup=5"
+      - "    - --audit-log-maxsize=100"
+      - "    - --authorization-mode=Node,RBAC"
+      - "    - --insecure-port=0"
+
+- name: Add volume mount for logs to the kube-apiserver.yaml
+  when: fix_k8s_components
+  blockinfile:
+      path: "/etc/kubernetes/manifests/kube-apiserver.yaml"
+      insertafter: "{{ item.insertafter }}"
+      marker: "{{ item.marker }}"
+      marker_begin: "BEGIN"
+      marker_end: "END"
+      block: "{{ item.block }}"
+  with_items:
+      - insertafter: 'volumes:'
+        marker: "# {mark} volumes section"
+        block: |2
+            - hostPath:
+                  path: /var/log/apiserver
+                  type: DirectoryOrCreate
+              name: audit-log
+      - insertafter: 'volumeMounts:'
+        marker: "# {mark} volume mounts section"
+        block: |4
+                - mountPath: /var/log/apiserver
+                  name: audit-log
+
+- name: Ensure variables are missing from kube-controller-manager.yaml so we can add them later
+  when: fix_k8s_components
+  lineinfile:
+      path: /etc/kubernetes/manifests/kube-controller-manager.yaml
+      regexp: "{{ item }}"
+      state: absent
+  with_items:
+      - "--terminated-pod-gc-threshold"
+
+- name: Add custom variables to the kube-apiserver.yaml
+  when: fix_k8s_components
+  lineinfile:
+      path: "/etc/kubernetes/manifests/kube-controller-manager.yaml"
+      insertafter: '-\skube-controller-manager'
+      line: "{{ item }}"
+  with_items:
+      - "    - --terminated-pod-gc-threshold=1000"
+
+- name: Ensure variables are missing from kube-scheduler.yaml so we can add them later
+  when: fix_k8s_components
+  lineinfile:
+      path: /etc/kubernetes/manifests/kube-scheduler.yaml
+      regexp: "{{ item }}"
+      state: absent
+  with_items:
+      - "--bind-address"
+
+- name: Add custom variables to the kube-scheduler.yaml
+  when: fix_k8s_components
+  lineinfile:
+      path: "/etc/kubernetes/manifests/kube-scheduler.yaml"
+      insertafter: '-\skube-scheduler'
+      line: "{{ item }}"
+  with_items:
+      - "    - --bind-address=127.0.0.1"
+
+- name: Ensure variables are missing from etcd.yaml so we can add them later
+  when: fix_k8s_components
+  lineinfile:
+      path: /etc/kubernetes/manifests/etcd.yaml
+      regexp: "{{ item }}"
+      state: absent
+  with_items:
+      - "--auto-tls"
+
+- name: Add custom variables to the etcd.yaml
+  when: fix_k8s_components
+  lineinfile:
+      path: "/etc/kubernetes/manifests/etcd.yaml"
+      insertafter: '-\setcd'
+      line: "{{ item }}"
+  with_items:
+      - "    - --auto-tls=false"
+
+- name: Wait for kube-apiserver to be back up, fail after 5 minutes
+  when: fix_k8s_components
+  shell: kubectl get po -n kube-system | grep 'kube-apiserver$(hostname)' | awk '{ print $2 }'
+  register: apiserver_status
+  until: apiserver_status.stdout.find( '1/1' ) != -1
+  retries: 300
+  delay: 1

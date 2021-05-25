@@ -1,0 +1,5 @@
+check_cluster_role_bindings: yes
+fix_file_permissions: yes
+fix_k8s_components: yes
+check_roles_have_wildcard_all: yes
+check_default_namespace_empty: yes
